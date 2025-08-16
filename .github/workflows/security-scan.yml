@@ -1,3 +1,4 @@
+
 name: Container Security Scan (OSCAR)
 
 on:
@@ -17,12 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write   # para subir SARIF (code scanning)
+      security-events: write
       actions: read
 
     env:
       IMAGE_REF: ghcr.io/grycap/oscar:3.6.2
-      # Política de fallo (puedes ajustarla): fail si hay High o Critical
       TRIVY_SEVERITY: CRITICAL,HIGH
       GRYPE_FAIL_ON_SEVERITY: high
       SBOM_FILE: sbom-oscar-cyclonedx.json
@@ -36,16 +36,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Pull image (para asegurar disponibilidad local)
-        run: |
-          docker pull $IMAGE_REF
+        run: docker pull $IMAGE_REF
 
       # ---------- Syft: generar SBOM CycloneDX ----------
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0.17.8
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
 
       - name: Generate SBOM (CycloneDX JSON)
-        run: |
-          syft packages $IMAGE_REF -o cyclonedx-json > $SBOM_FILE
+        run: syft packages $IMAGE_REF -o cyclonedx-json > $SBOM_FILE
         shell: bash
 
       # ---------- Trivy: escaneo imagen + SARIF ----------
@@ -59,7 +58,7 @@ jobs:
             --exit-code 1 \
             --format table $IMAGE_REF | tee $TRIVY_TABLE
         shell: bash
-        continue-on-error: true  # recogemos artefactos aunque haya CVEs
+        continue-on-error: true
 
       - name: Trivy scan (SARIF)
         run: |
@@ -78,18 +77,16 @@ jobs:
 
       # ---------- Grype: escaneo desde SBOM + SARIF ----------
       - name: Install Grype
-        uses: anchore/scan-action/download-grype@v3
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
       - name: Grype scan from SBOM (table, fail on severity)
-        run: |
-          grype sbom:${SBOM_FILE} -o table \
-            --fail-on ${GRYPE_FAIL_ON_SEVERITY} | tee $GRYPE_TABLE
+        run: grype sbom:${SBOM_FILE} -o table --fail-on ${GRYPE_FAIL_ON_SEVERITY} | tee $GRYPE_TABLE
         shell: bash
         continue-on-error: true
 
       - name: Grype scan from SBOM (SARIF)
-        run: |
-          grype sbom:${SBOM_FILE} -o sarif > $GRYPE_SARIF
+        run: grype sbom:${SBOM_FILE} -o sarif > $GRYPE_SARIF
         shell: bash
         continue-on-error: true
 
