@@ -1,7 +1,11 @@
 name: Container Security Scan (OSCAR)
 
 on:
+  # Lanzarlo manualmente desde la pestaña "Actions"
   workflow_dispatch:
+
+  # Ejecutarlo en pushes a ramas principales y cuando cambien
+  # archivos típicos de imagen/cliente
   push:
     branches: [ main, master ]
     paths:
@@ -9,21 +13,29 @@ on:
       - '**/*.py'
       - '**/Dockerfile'
       - '.github/workflows/security-scan.yml'
+
+  # Programado: lunes 06:00 UTC (escaneo semanal)
   schedule:
-    - cron: '0 6 * * 1' # Lunes 06:00 UTC (escaneo semanal)
+    - cron: '0 6 * * 1'
 
 jobs:
   scan:
     runs-on: ubuntu-latest
+
+    # Necesario para subir informes SARIF a "Code scanning alerts"
     permissions:
       contents: read
-      security-events: write   # subir SARIF (Code scanning)
+      security-events: write
       actions: read
 
     env:
       IMAGE_REF: ghcr.io/grycap/oscar:3.6.2
+
+      # Políticas de severidad (ajústalas a tu tolerancia)
       TRIVY_SEVERITY: CRITICAL,HIGH
       GRYPE_FAIL_ON_SEVERITY: high
+
+      # Nombres de ficheros de salida
       SBOM_FILE: sbom-oscar-cyclonedx.json
       TRIVY_TABLE: trivy-oscar-table.txt
       TRIVY_SARIF: trivy-oscar.sarif
@@ -31,32 +43,43 @@ jobs:
       GRYPE_SARIF: grype-oscar.sarif
 
     steps:
-      - name: Checkout
+      - name: Checkout repository (opcional si no construyes)
         uses: actions/checkout@v4
 
-      - name: Pull image
+      - name: Pull image (asegura disponibilidad local)
         run: docker pull "$IMAGE_REF"
 
-      # --- Syft: generar SBOM ---
+      # ---------- SYFT: generar SBOM (CycloneDX) ----------
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0   # <-- usar major tag
+        uses: anchore/sbom-action/download-syft@v0.17.8
 
       - name: Generate SBOM (CycloneDX JSON)
-        run: syft packages "$IMAGE_REF" -o cyclonedx-json > "$SBOM_FILE"
+        shell: bash
+        run: |
+          syft packages "$IMAGE_REF" -o cyclonedx-json > "$SBOM_FILE"
 
-      # --- Trivy: escaneo imagen + SARIF ---
-      - name: Install Trivy
-        uses: aquasecurity/setup-trivy@v0           # <-- usar major tag
+      # ---------- TRIVY: instalación + escaneo ----------
+      # Usamos el script oficial para evitar problemas con etiquetas de la acción
+      - name: Install Trivy (script)
+        shell: bash
+        run: |
+          set -e
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sudo sh -s -- -b /usr/local/bin v0.52.2
+          trivy --version
 
-      - name: Trivy scan (table, fail on severity)
+      - name: Trivy scan (tabla; fail en HIGH/CRITICAL)
+        shell: bash
         run: |
           trivy image --scanners vuln \
             --severity "${TRIVY_SEVERITY}" \
             --exit-code 1 \
             --format table "$IMAGE_REF" | tee "$TRIVY_TABLE"
+        # Seguimos aunque haya CVEs para poder publicar informes
         continue-on-error: true
 
       - name: Trivy scan (SARIF)
+        shell: bash
         run: |
           trivy image --scanners vuln \
             --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
@@ -70,18 +93,21 @@ jobs:
         with:
           sarif_file: ${{ env.TRIVY_SARIF }}
 
-      # --- Grype: escaneo desde SBOM + SARIF ---
+      # ---------- GRYPE: escaneo desde el SBOM + SARIF ----------
       - name: Install Grype
-        uses: anchore/scan-action/download-grype@v3  # este tag es correcto
+        uses: anchore/scan-action/download-grype@v3
 
-      - name: Grype scan from SBOM (table, fail on severity)
+      - name: Grype scan from SBOM (tabla; fail en HIGH)
+        shell: bash
         run: |
           grype "sbom:${SBOM_FILE}" -o table \
             --fail-on "${GRYPE_FAIL_ON_SEVERITY}" | tee "$GRYPE_TABLE"
         continue-on-error: true
 
       - name: Grype scan from SBOM (SARIF)
-        run: grype "sbom:${SBOM_FILE}" -o sarif > "$GRYPE_SARIF"
+        shell: bash
+        run: |
+          grype "sbom:${SBOM_FILE}" -o sarif > "$GRYPE_SARIF"
         continue-on-error: true
 
       - name: Upload Grype SARIF to GitHub Security
@@ -89,14 +115,7 @@ jobs:
         with:
           sarif_file: ${{ env.GRYPE_SARIF }}
 
-      # --- (Opcional) Mostrar versiones instaladas para trazabilidad ---
-      - name: Show tool versions
-        run: |
-          syft version || true
-          trivy --version || true
-          grype version || true
-
-      # --- Artefactos para anexos ---
+      # ---------- Artefactos descargables (para anexos del TFM) ----------
       - name: Upload artifacts (SBOM & reports)
         uses: actions/upload-artifact@v4
         with:
@@ -108,21 +127,24 @@ jobs:
             ${{ env.GRYPE_TABLE }}
             ${{ env.GRYPE_SARIF }}
 
-      # --- Resumen en la ejecución ---
+      # ---------- Resumen legible en la ejecución ----------
       - name: Job summary
         if: always()
+        shell: bash
         run: |
-          echo "## Resultados de escaneo sobre \`$IMAGE_REF\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### SBOM" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Archivo: \`${{ env.SBOM_FILE }}\` (CycloneDX JSON)" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Trivy (tabla)" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          tail -n 40 "${{ env.TRIVY_TABLE }}" >> "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Grype (tabla desde SBOM)" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          tail -n 40 "${{ env.GRYPE_TABLE }}" >> "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Resultados de escaneo sobre \`$IMAGE_REF\`"
+            echo
+            echo "### SBOM"
+            echo "- Archivo: \`${{ env.SBOM_FILE }}\` (CycloneDX JSON)"
+            echo
+            echo "### Trivy (tabla)"
+            echo '```'
+            tail -n 40 "${{ env.TRIVY_TABLE }}" || true
+            echo '```'
+            echo
+            echo "### Grype (tabla desde SBOM)"
+            echo '```'
+            tail -n 40 "${{ env.GRYPE_TABLE }}" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
