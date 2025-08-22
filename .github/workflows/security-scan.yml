@@ -1,21 +1,14 @@
-name: Container Security Scan (OSCAR)
+name: Container Security Scan (TEST - node:14)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ "main", "master" ]
-    paths:
-      - "**/Dockerfile"
-      - ".github/workflows/security-scan.yml"
-  schedule:
-    - cron: "0 6 * * 1"  # Lunes 06:00 UTC
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     env:
-      IMAGE_REF: ghcr.io/grycap/oscar:3.6.2
-      SBOM_FILE: sbom-oscar-syft.json
+      IMAGE_REF: node:14
+      SBOM_FILE: sbom-node-syft.json
       TRIVY_TABLE: trivy-table.txt
       TRIVY_SARIF: trivy-results.sarif
       GRYPE_TABLE: grype-table.txt
@@ -79,7 +72,7 @@ jobs:
       - name: Upload artifacts (SBOM & reports)
         uses: actions/upload-artifact@v4
         with:
-          name: oscar-security-reports
+          name: node-security-reports
           path: |
             ${{ env.SBOM_FILE }}
             ${{ env.TRIVY_TABLE }}
@@ -109,12 +102,12 @@ jobs:
             echo ""
             echo "### Trivy (tabla)"
             echo '```'
-            tail -n 80 "$TRIVY_TABLE" || echo "Sin resultados"
+            [ -s "$TRIVY_TABLE" ] && tail -n 80 "$TRIVY_TABLE" || echo "Sin resultados"
             echo '```'
             echo ""
             echo "### Grype (tabla desde SBOM)"
             echo '```'
-            tail -n 80 "$GRYPE_TABLE" || echo "Sin resultados"
+            [ -s "$GRYPE_TABLE" ] && tail -n 80 "$GRYPE_TABLE" || echo "Sin resultados"
             echo '```'
             echo ""
             echo "### Quality gate"
