@@ -29,7 +29,7 @@ jobs:
       GRYPE_SARIF: grype-results.sarif
 
     steps:
-      - name: Checkout (opcional)
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Pull image
@@ -55,7 +55,7 @@ jobs:
           output: ${{ env.TRIVY_TABLE }}
           severity: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
           ignore-unfixed: false
-          exit-code: '0'        # no fallar el job (evidencias del TFM)
+          exit-code: '0'     # no fallar el job para evidencias
         continue-on-error: true
 
       - name: Trivy image scan (SARIF)
@@ -83,32 +83,17 @@ jobs:
       - name: Grype scan (table from SBOM)
         shell: bash
         run: |
-          grype "sbom:${SBOM_FILE}" -o table | tee "$GRYPE_TABLE"
-          test -s "$GRYPE_TABLE" || echo "WARN: grype table quedó vacío"
-        continue-on-error: true
+          grype "sbom:${SBOM_FILE}" -o table | tee "$GRYPE_TABLE" || true
+          # Si por cualquier motivo queda vacío, deja una nota para el summary:
+          if [ ! -s "$GRYPE_TABLE" ]; then
+            echo "NOTE: grype no produjo salida (revisa SBOM y versión de grype)." > "$GRYPE_TABLE"
+          fi
 
-      - name: Grype scan (SARIF from SBOM)
-        shell: bash
-        run: |
-          grype "sbom:${SBOM_FILE}" -o sarif > "$GRYPE_SARIF"
-          # si grype falla imprime SARIF parcial; evitar subir JSON roto
-          python - <<'PY'
-import json,sys,os
-p=os.environ["GRYPE_SARIF"]
-try:
-  json.load(open(p))
-except Exception:
-  print("Grype SARIF inválido; no se subirá.")
-  os.remove(p)
-PY
-        continue-on-error: true
-
-      - name: Upload Grype SARIF to GitHub Security
-        if: hashFiles(env.GRYPE_SARIF) != ''
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: ${{ env.GRYPE_SARIF }}
-        continue-on-error: true
+      # (Opcional) Si quieres el SARIF de Grype, descomenta este bloque:
+      # - name: Grype scan (SARIF from SBOM)
+      #   shell: bash
+      #   run: |
+      #     grype "sbom:${SBOM_FILE}" -o sarif > "$GRYPE_SARIF" || true
 
       # ---------- Artefactos ----------
       - name: Upload artifacts (SBOM & reports)
@@ -135,12 +120,19 @@ PY
 
           echo "### Trivy (tabla)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          test -s "$TRIVY_TABLE" && tail -n 200 "$TRIVY_TABLE" >> "$GITHUB_STEP_SUMMARY" || echo "(sin contenido)" >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$TRIVY_TABLE" ]; then
+            tail -n 200 "$TRIVY_TABLE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "(sin contenido)" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           echo "### Grype (tabla desde SBOM)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          test -s "$GRYPE_TABLE" && tail -n 200 "$GRYPE_TABLE" >> "$GITHUB_STEP_SUMMARY" || echo "(sin contenido)" >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$GRYPE_TABLE" ]; then
+            tail -n 200 "$GRYPE_TABLE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "(sin contenido)" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-
