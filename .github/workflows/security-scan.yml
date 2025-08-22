@@ -1,14 +1,21 @@
-name: Container Security Scan (TEST - node:14)
+name: Container Security Scan (OSCAR)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - "**/Dockerfile"
+      - ".github/workflows/security-scan.yml"
+  schedule:
+    - cron: "0 6 * * 1"  # Lunes 06:00 UTC
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     env:
-      IMAGE_REF: node:14
-      SBOM_FILE: sbom-node-syft.json
+      IMAGE_REF: ghcr.io/grycap/oscar:3.6.2
+      SBOM_FILE: sbom-oscar-syft.json
       TRIVY_TABLE: trivy-table.txt
       TRIVY_SARIF: trivy-results.sarif
       GRYPE_TABLE: grype-table.txt
@@ -47,11 +54,7 @@ jobs:
             --output "$TRIVY_SARIF" \
             "$IMAGE_REF"
           rc=$?
-          if [ $rc -ne 0 ]; then
-            echo "TRIVY_FAILED=1" >> $GITHUB_ENV
-          else
-            echo "TRIVY_FAILED=0" >> $GITHUB_ENV
-          fi
+          echo "TRIVY_FAILED=$rc" >> $GITHUB_ENV
           exit 0
 
       - name: Upload Trivy SARIF to GitHub Security
@@ -72,7 +75,7 @@ jobs:
       - name: Upload artifacts (SBOM & reports)
         uses: actions/upload-artifact@v4
         with:
-          name: node-security-reports
+          name: oscar-security-reports
           path: |
             ${{ env.SBOM_FILE }}
             ${{ env.TRIVY_TABLE }}
