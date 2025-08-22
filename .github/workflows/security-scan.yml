@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       IMAGE_REF: ghcr.io/grycap/oscar:3.6.2
-      SBOM_FILE: sbom-oscar-cyclonedx.json
+      SBOM_FILE: sbom-oscar-syft.json
       TRIVY_TABLE: trivy-table.txt
       TRIVY_SARIF: trivy-results.sarif
       GRYPE_TABLE: grype-table.txt
@@ -28,11 +28,12 @@ jobs:
       - name: Pull image
         run: docker pull "$IMAGE_REF"
 
-      # --- Syft (SBOM) ---
+      # --- Syft (SBOM en formato syft-json compatible con Grype) ---
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0.17.8
-      - name: Generate SBOM (CycloneDX JSON)
-        run: syft packages "$IMAGE_REF" -o cyclonedx-json > "$SBOM_FILE"
+
+      - name: Generate SBOM (Syft JSON)
+        run: syft packages "$IMAGE_REF" -o syft-json > "$SBOM_FILE"
 
       # --- Trivy ---
       - name: Set up Trivy
@@ -104,16 +105,16 @@ jobs:
             echo "## Resultados de escaneo sobre \`$IMAGE_REF\`"
             echo ""
             echo "### SBOM"
-            echo "- Archivo: \`$SBOM_FILE\` (CycloneDX JSON)"
+            echo "- Archivo: \`$SBOM_FILE\` (Syft JSON)"
             echo ""
             echo "### Trivy (tabla)"
             echo '```'
-            tail -n 80 "$TRIVY_TABLE" || true
+            tail -n 80 "$TRIVY_TABLE" || echo "Sin resultados"
             echo '```'
             echo ""
             echo "### Grype (tabla desde SBOM)"
             echo '```'
-            tail -n 80 "$GRYPE_TABLE" || true
+            tail -n 80 "$GRYPE_TABLE" || echo "Sin resultados"
             echo '```'
             echo ""
             echo "### Quality gate"
