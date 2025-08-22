@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write   # para subir SARIF a Code scanning
+      security-events: write   # subir SARIF a Code Scanning
 
     env:
       IMAGE_REF: ghcr.io/grycap/oscar:3.6.2
@@ -28,7 +28,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------------- Trivy por APT (sin acciones externas) ----------------
+      # --------- Instalar Trivy por APT (evita problemas de acción) ---------
       - name: Install Trivy via apt
         run: |
           set -eux
@@ -40,10 +40,10 @@ jobs:
           sudo apt-get install -y trivy
           trivy --version
 
-      - name: Pull image (ensure locally available)
+      - name: Pull image
         run: docker pull "$IMAGE_REF"
 
-      # ---------------- SBOM con Syft (acción oficial) ----------------
+      # ---------------- SBOM con Syft ----------------
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0.17.8
 
@@ -51,36 +51,26 @@ jobs:
         run: |
           set -eux
           syft packages "$IMAGE_REF" -o cyclonedx-json > "$SBOM_FILE"
-          echo "SBOM head:"
           head -n 5 "$SBOM_FILE" || true
-          # Validar que sea CycloneDX
-          if command -v jq >/dev/null 2>&1; then
-            bf=$(jq -r '.bomFormat // empty' "$SBOM_FILE" || true)
-            echo "bomFormat: $bf"
-          fi
 
       # ---------------- Trivy: tabla + SARIF ----------------
       - name: Trivy scan (table)
         continue-on-error: true
         run: |
           set -eux
-          trivy image --scanners vuln \
-            --format table \
-            --output "$TRIVY_TABLE" \
-            "$IMAGE_REF"
+          trivy image --scanners vuln --format table \
+            --output "$TRIVY_TABLE" "$IMAGE_REF"
           tail -n 40 "$TRIVY_TABLE" || true
 
       - name: Trivy scan (SARIF)
         continue-on-error: true
         run: |
           set -eux
-          trivy image --scanners vuln \
-            --format sarif \
-            --output "$TRIVY_SARIF" \
-            "$IMAGE_REF"
-          # Validar que el SARIF no esté vacío
+          trivy image --scanners vuln --format sarif \
+            --output "$TRIVY_SARIF" "$IMAGE_REF"
+          # Asegurar que no esté vacío (para que el upload no falle)
           if [ ! -s "$TRIVY_SARIF" ]; then
-            echo '{}' > "$TRIVY_SARIF"
+            echo '{"version":"2.1.0","runs":[]}' > "$TRIVY_SARIF"
           fi
 
       - name: Upload Trivy SARIF to GitHub Security
@@ -88,46 +78,60 @@ jobs:
         with:
           sarif_file: ${{ env.TRIVY_SARIF }}
 
-      # ---------------- Grype: instalar + escaneo SBOM con fallback ----------------
+      # ---------------- Grype: instalar + actualizar DB + escaneo SBOM ----------------
       - name: Install Grype
         uses: anchore/scan-action/download-grype@v3
         with:
-          version: latest
+          grype-version: latest
+
+      - name: Grype DB update
+        run: |
+          set -eux
+          grype db update || true
+          grype version || true
 
       - name: Grype scan (table from SBOM, with fallback)
         shell: bash
         continue-on-error: true
         run: |
           set -o pipefail
-          echo "== Ejecutando Grype sobre SBOM =="
+          echo "== Grype sobre SBOM (tabla) =="
           if grype "sbom:${SBOM_FILE}" -o table --add-cpes-if-none 2>&1 | tee "$GRYPE_TABLE" ; then
             echo "Grype SBOM OK" | tee -a "$GRYPE_TABLE"
           else
             echo "Grype SBOM falló; intentando fallback sobre la imagen..." | tee -a "$GRYPE_TABLE"
             grype "${IMAGE_REF}" -o table --add-cpes-if-none 2>&1 | tee -a "$GRYPE_TABLE" || true
           fi
-
-          # Asegurar que el archivo no quede vacío
+          # Evitar vacío
           if [ ! -s "$GRYPE_TABLE" ]; then
-            echo "NOTE: grype no produjo salida (revisa SBOM o DB). Dump de versión:" > "$GRYPE_TABLE"
-            grype version 2>&1 | tee -a "$GRYPE_TABLE" || true
+            {
+              echo "NOTE: grype no produjo salida."
+              grype version || true
+            } > "$GRYPE_TABLE"
           fi
 
-      - name: Grype scan (SARIF from SBOM)
+      - name: Grype scan (SARIF from SBOM, with fallback)
         continue-on-error: true
         run: |
           set -eux
-          grype "sbom:${SBOM_FILE}" -o sarif > "$GRYPE_SARIF" || true
-          if [ ! -s "$GRYPE_SARIF" ]; then
-            echo '{}' > "$GRYPE_SARIF"
+          if grype "sbom:${SBOM_FILE}" -o sarif > "$GRYPE_SARIF"; then
+            echo "Grype SARIF OK"
+          else
+            echo "Grype SARIF desde SBOM falló; intentando contra imagen…"
+            grype "${IMAGE_REF}" -o sarif > "$GRYPE_SARIF" || true
           fi
+          # Validar SARIF
+          if ! jq -e '.version and .runs' "$GRYPE_SARIF" >/dev/null 2>&1; then
+            echo '{"version":"2.1.0","runs":[]}' > "$GRYPE_SARIF"
+          fi
+          wc -c "$GRYPE_SARIF" || true
 
       - name: Upload Grype SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: ${{ env.GRYPE_SARIF }}
 
-      # ---------------- Artefactos para anexos del TFM ----------------
+      # ---------------- Artefactos para anexos ----------------
       - name: Upload artifacts (SBOM & reports)
         uses: actions/upload-artifact@v4
         with:
@@ -139,7 +143,7 @@ jobs:
             ${{ env.GRYPE_TABLE }}
             ${{ env.GRYPE_SARIF }}
 
-      # ---------------- Resumen en la ejecución ----------------
+      # ---------------- Resumen visible en el run ----------------
       - name: Job summary
         if: always()
         run: |
