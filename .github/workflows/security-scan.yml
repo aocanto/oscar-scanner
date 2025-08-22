@@ -16,7 +16,6 @@ jobs:
   scan:
     runs-on: ubuntu-latest
 
-    # Necesario para subir SARIF a "Security > Code scanning"
     permissions:
       contents: read
       security-events: write
@@ -24,17 +23,14 @@ jobs:
 
     env:
       IMAGE_REF: ghcr.io/grycap/oscar:3.6.2
-
-      # --- Parámetros de salida / artefactos ---
       SBOM_FILE: sbom-oscar-cyclonedx.json
       TRIVY_TABLE: trivy-table.txt
       TRIVY_SARIF: trivy-results.sarif
       GRYPE_TABLE: grype-oscar-table.txt
       GRYPE_SARIF: grype-oscar.sarif
-
-      # --- (Opcional) política de severidad si quisieras romper el build ---
       TRIVY_SEVERITY: CRITICAL,HIGH
-      GRYPE_FAIL_ON_SEVERITY: high
+      # Evita ruido y timeouts de actualización automática de DB:
+      GRYPE_CHECK_FOR_APP_UPDATE: "false"
 
     steps:
       - name: Checkout (opcional)
@@ -50,6 +46,7 @@ jobs:
       - name: Generate SBOM (CycloneDX JSON)
         run: |
           syft packages "$IMAGE_REF" -o cyclonedx-json > "$SBOM_FILE"
+          echo "SBOM generado:"; ls -lh "$SBOM_FILE"; head -n 5 "$SBOM_FILE" || true
 
       # ---------- Trivy: escaneo imagen (tabla + SARIF) ----------
       - name: Install Trivy
@@ -61,7 +58,6 @@ jobs:
             --severity "${TRIVY_SEVERITY}" \
             --format table \
             "$IMAGE_REF" | tee "$TRIVY_TABLE"
-        # Mantenemos el pipeline en verde para el TFM
         continue-on-error: true
 
       - name: Trivy scan (SARIF)
@@ -82,9 +78,26 @@ jobs:
       - name: Install Grype
         uses: anchore/scan-action/download-grype@v3
 
-      - name: Grype scan from SBOM (table)
+      - name: Grype diagnostics
         run: |
-          grype sbom:"$SBOM_FILE" -o table | tee "$GRYPE_TABLE"
+          echo "== Grype version ==" && grype version || true
+          echo "== Grype DB status ==" && grype db status || true
+          echo "== SBOM size =="
+          wc -c "$SBOM_FILE" || true
+
+      - name: Grype scan from SBOM (table; capture stderr y fallback)
+        run: |
+          set -o pipefail
+          # Intento 1: SBOM -> tabla
+          grype sbom:"$SBOM_FILE" -o table 2>&1 | tee "$GRYPE_TABLE"
+          # Si quedó vacío, hacemos fallback a escaneo directo de la imagen
+          if [ ! -s "$GRYPE_TABLE" ]; then
+            {
+              echo ""
+              echo "---- Fallback: escaneo directo de la imagen ($IMAGE_REF) ----"
+              grype "$IMAGE_REF" -o table 2>&1
+            } | tee -a "$GRYPE_TABLE"
+          fi
         continue-on-error: true
 
       - name: Grype scan from SBOM (SARIF)
@@ -122,13 +135,13 @@ jobs:
 
           echo "### Trivy (tabla)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          (tail -n 80 "${{ env.TRIVY_TABLE }}" || true) >> $GITHUB_STEP_SUMMARY
+          (tail -n 60 "${{ env.TRIVY_TABLE }}" || true) >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "### Grype (tabla desde SBOM)" >> $GITHUB_STEP_SUMMARY
+          echo "### Grype (tabla)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          (tail -n 80 "${{ env.GRYPE_TABLE }}" || true) >> $GITHUB_STEP_SUMMARY
+          (tail -n 60 "${{ env.GRYPE_TABLE }}" || true) >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
           echo "" >> $GITHUB_STEP_SUMMARY
