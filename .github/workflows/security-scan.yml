@@ -10,15 +10,14 @@ on:
       - '**/Dockerfile'
       - '.github/workflows/security-scan.yml'
   schedule:
-    - cron: '0 6 * * 1' # Lunes 06:00 UTC (escaneo semanal)
+    - cron: '0 6 * * 1' # Lunes 06:00 UTC
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
-      security-events: write
+      security-events: write  # subir SARIF a Code Scanning
       actions: read
 
     env:
@@ -26,91 +25,69 @@ jobs:
       SBOM_FILE: sbom-oscar-cyclonedx.json
       TRIVY_TABLE: trivy-table.txt
       TRIVY_SARIF: trivy-results.sarif
-      GRYPE_TABLE: grype-oscar-table.txt
-      GRYPE_SARIF: grype-oscar.sarif
-      TRIVY_SEVERITY: CRITICAL,HIGH
-      # Evita ruido y timeouts de actualización automática de DB:
-      GRYPE_CHECK_FOR_APP_UPDATE: "false"
+      GRYPE_TABLE: grype-table.txt
+      GRYPE_SARIF: grype-results.sarif
 
     steps:
       - name: Checkout (opcional)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Pull image
+      - name: Pull image (asegurar disponibilidad local)
         run: docker pull "$IMAGE_REF"
 
-      # ---------- Syft: SBOM CycloneDX ----------
+      # --- SBOM con Syft ---
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0.17.8
 
       - name: Generate SBOM (CycloneDX JSON)
-        run: |
-          syft packages "$IMAGE_REF" -o cyclonedx-json > "$SBOM_FILE"
-          echo "SBOM generado:"; ls -lh "$SBOM_FILE"; head -n 5 "$SBOM_FILE" || true
+        shell: bash
+        run: syft packages "$IMAGE_REF" -o cyclonedx-json > "$SBOM_FILE"
 
-      # ---------- Trivy: escaneo imagen (tabla + SARIF) ----------
-      - name: Install Trivy
-        uses: aquasecurity/setup-trivy@v0.20.0
-
-      - name: Trivy scan (table)
-        run: |
-          trivy image --scanners vuln \
-            --severity "${TRIVY_SEVERITY}" \
-            --format table \
-            "$IMAGE_REF" | tee "$TRIVY_TABLE"
-        continue-on-error: true
+      # --- Trivy usando la acción oficial (más robusta) ---
+      - name: Trivy scan (tabla; no bloquear)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '0'          # no falla el job
+          output: ${{ env.TRIVY_TABLE }}
 
       - name: Trivy scan (SARIF)
-        run: |
-          trivy image --scanners vuln \
-            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
-            --format sarif \
-            --output "$TRIVY_SARIF" \
-            "$IMAGE_REF"
-        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: sarif
+          output: ${{ env.TRIVY_SARIF }}
+          # escanear todo el rango de severidades:
+          args: --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
 
       - name: Upload Trivy SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: ${{ env.TRIVY_SARIF }}
 
-      # ---------- Grype: desde SBOM (tabla + SARIF) ----------
+      # --- Grype desde SBOM ---
       - name: Install Grype
         uses: anchore/scan-action/download-grype@v3
 
-      - name: Grype diagnostics
+      - name: Grype scan from SBOM (tabla; no bloquear)
+        shell: bash
         run: |
-          echo "== Grype version ==" && grype version || true
-          echo "== Grype DB status ==" && grype db status || true
-          echo "== SBOM size =="
-          wc -c "$SBOM_FILE" || true
-
-      - name: Grype scan from SBOM (table; capture stderr y fallback)
-        run: |
-          set -o pipefail
-          # Intento 1: SBOM -> tabla
-          grype sbom:"$SBOM_FILE" -o table 2>&1 | tee "$GRYPE_TABLE"
-          # Si quedó vacío, hacemos fallback a escaneo directo de la imagen
-          if [ ! -s "$GRYPE_TABLE" ]; then
-            {
-              echo ""
-              echo "---- Fallback: escaneo directo de la imagen ($IMAGE_REF) ----"
-              grype "$IMAGE_REF" -o table 2>&1
-            } | tee -a "$GRYPE_TABLE"
-          fi
-        continue-on-error: true
+          # Redirigimos stdout y stderr para evitar archivo vacío
+          grype "sbom:${SBOM_FILE}" -o table 2>&1 | tee "$GRYPE_TABLE" || true
 
       - name: Grype scan from SBOM (SARIF)
+        shell: bash
         run: |
-          grype sbom:"$SBOM_FILE" -o sarif > "$GRYPE_SARIF"
-        continue-on-error: true
+          grype "sbom:${SBOM_FILE}" -o sarif > "$GRYPE_SARIF" || true
 
       - name: Upload Grype SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: ${{ env.GRYPE_SARIF }}
 
-      # ---------- Artefactos (para anexos del TFM) ----------
+      # --- Artefactos para anexos del TFM ---
       - name: Upload artifacts (SBOM & reports)
         uses: actions/upload-artifact@v4
         with:
@@ -122,28 +99,27 @@ jobs:
             ${{ env.GRYPE_TABLE }}
             ${{ env.GRYPE_SARIF }}
 
-      # ---------- Resumen en el run ----------
+      # --- Resumen visible en el run ---
       - name: Job summary
         if: always()
+        shell: bash
         run: |
-          echo "## Resultados de escaneo sobre \`$IMAGE_REF\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          echo "### SBOM" >> $GITHUB_STEP_SUMMARY
-          echo "- Archivo: \`${{ env.SBOM_FILE }}\` (CycloneDX JSON)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          echo "### Trivy (tabla)" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          (tail -n 60 "${{ env.TRIVY_TABLE }}" || true) >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          echo "### Grype (tabla)" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          (tail -n 60 "${{ env.GRYPE_TABLE }}" || true) >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Quality gate" >> $GITHUB_STEP_SUMMARY
-          echo "- Desactivado para evidencias del TFM (no bloquea la ejecución)" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Resultados de escaneo sobre \`$IMAGE_REF\`"
+            echo
+            echo "### SBOM"
+            echo "- Archivo: \`${SBOM_FILE}\` (CycloneDX JSON)"
+            echo
+            echo "### Trivy (tabla)"
+            echo '```'
+            tail -n 60 "${TRIVY_TABLE}" || true
+            echo '```'
+            echo
+            echo "### Grype (tabla desde SBOM)"
+            echo '```'
+            tail -n 60 "${GRYPE_TABLE}" || true
+            echo '```'
+            echo
+            echo "### Quality gate"
+            echo "- Desactivado para evidencias del TFM (no bloquea la ejecución)"
+          } >> "$GITHUB_STEP_SUMMARY"
