@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout (opcional)
-      - uses: actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: Pull image (asegurar disponibilidad local)
         run: docker pull "$IMAGE_REF"
@@ -43,14 +43,14 @@ jobs:
         shell: bash
         run: syft packages "$IMAGE_REF" -o cyclonedx-json > "$SBOM_FILE"
 
-      # --- Trivy usando la acción oficial (más robusta) ---
+      # --- Trivy usando la acción oficial ---
       - name: Trivy scan (tabla; no bloquear)
         uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: ${{ env.IMAGE_REF }}
           format: table
           severity: CRITICAL,HIGH
-          exit-code: '0'          # no falla el job
+          exit-code: '0'                # no falla el job
           output: ${{ env.TRIVY_TABLE }}
 
       - name: Trivy scan (SARIF)
@@ -59,7 +59,6 @@ jobs:
           image-ref: ${{ env.IMAGE_REF }}
           format: sarif
           output: ${{ env.TRIVY_SARIF }}
-          # escanear todo el rango de severidades:
           args: --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
 
       - name: Upload Trivy SARIF to GitHub Security
@@ -74,7 +73,6 @@ jobs:
       - name: Grype scan from SBOM (tabla; no bloquear)
         shell: bash
         run: |
-          # Redirigimos stdout y stderr para evitar archivo vacío
           grype "sbom:${SBOM_FILE}" -o table 2>&1 | tee "$GRYPE_TABLE" || true
 
       - name: Grype scan from SBOM (SARIF)
