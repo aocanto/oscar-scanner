@@ -23,7 +23,7 @@ jobs:
 
       # --- Instalar Trivy ---
       - name: Set up Trivy
-        uses: aquasecurity/setup-trivy@v0.12.0
+        uses: aquasecurity/setup-trivy@v0.1.5
 
       # --- Generar SBOM con Trivy ---
       - name: Generate SBOM (CycloneDX JSON)
@@ -40,7 +40,7 @@ jobs:
         run: |
           trivy image --format sarif --output "$TRIVY_SARIF" "$IMAGE_REF" || true
 
-      # --- Instalar Grype (última estable o fija) ---
+      # --- Instalar Grype ---
       - name: Install Grype
         uses: anchore/scan-action/download-grype@v3
         with:
