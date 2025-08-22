@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write  # subir SARIF a Code Scanning
+      security-events: write
       actions: read
 
     env:
@@ -35,7 +35,6 @@ jobs:
       - name: Pull image (asegurar disponibilidad local)
         run: docker pull "$IMAGE_REF"
 
-      # --- SBOM con Syft ---
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0.17.8
 
@@ -43,14 +42,13 @@ jobs:
         shell: bash
         run: syft packages "$IMAGE_REF" -o cyclonedx-json > "$SBOM_FILE"
 
-      # --- Trivy usando la acción oficial ---
       - name: Trivy scan (tabla; no bloquear)
         uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: ${{ env.IMAGE_REF }}
           format: table
           severity: CRITICAL,HIGH
-          exit-code: '0'                # no falla el job
+          exit-code: '0'
           output: ${{ env.TRIVY_TABLE }}
 
       - name: Trivy scan (SARIF)
@@ -66,7 +64,6 @@ jobs:
         with:
           sarif_file: ${{ env.TRIVY_SARIF }}
 
-      # --- Grype desde SBOM ---
       - name: Install Grype
         uses: anchore/scan-action/download-grype@v3
 
@@ -85,7 +82,6 @@ jobs:
         with:
           sarif_file: ${{ env.GRYPE_SARIF }}
 
-      # --- Artefactos para anexos del TFM ---
       - name: Upload artifacts (SBOM & reports)
         uses: actions/upload-artifact@v4
         with:
@@ -97,7 +93,6 @@ jobs:
             ${{ env.GRYPE_TABLE }}
             ${{ env.GRYPE_SARIF }}
 
-      # --- Resumen visible en el run ---
       - name: Job summary
         if: always()
         shell: bash
